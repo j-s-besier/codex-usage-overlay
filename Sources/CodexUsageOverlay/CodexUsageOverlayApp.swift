@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CodexUsageCore
 import SwiftUI
 
 @main
@@ -88,12 +89,16 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate {
 final class UsageStore: ObservableObject {
     @Published private(set) var windows: [UsageWindow] = []
     @Published private(set) var dailyTokens: Int64?
+    @Published private(set) var responseRecords: [ResponseTokenUsageRecord] = []
     @Published private(set) var isLoading = false
     @Published private(set) var hasLoaded = false
     @Published private(set) var logOpenError: String?
+    @Published private(set) var responseLogError: String?
 
     private var timer: Timer?
     private let tokenCounter = LocalTokenUsageCounter()
+    private let responseLog = ResponseUsageLogStore()
+    private var responseInspectorWindow: NSWindow?
 
     init() {
         refresh()
@@ -106,8 +111,10 @@ final class UsageStore: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         let tokenCounter = self.tokenCounter
+        let responseLog = self.responseLog
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            let responseResult = Result { try responseLog.synchronize() }
             let result = Result {
                 try CodexUsageClient.fetch(dailyTokens: try? tokenCounter.todayTotal())
             }
@@ -115,6 +122,15 @@ final class UsageStore: ObservableObject {
                 guard let self else { return }
                 self.isLoading = false
                 self.hasLoaded = true
+                switch responseResult {
+                case .success(let records):
+                    if self.responseRecords != records {
+                        self.responseRecords = records
+                    }
+                    self.responseLogError = nil
+                case .failure(let error):
+                    self.responseLogError = "Couldn't update response log: \(error.localizedDescription)"
+                }
                 switch result {
                 case .success(let snapshot):
                     self.windows = snapshot.windows

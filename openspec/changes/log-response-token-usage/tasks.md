@@ -6,9 +6,9 @@
 
 ## 2. Persist and recover the app-owned JSONL log
 
-- [ ] 2.1 Add append-only JSONL persistence under `CODEX_HOME` or `~/.codex` with a versioned record format.
-- [ ] 2.2 Add startup and periodic source scanning with byte-offset checkpoints, partial-line handling, and response-ID deduplication.
-- [ ] 2.3 On first run, import only current-local-day records; on later runs, catch up from saved checkpoints without rewriting prior log rows.
+- [x] 2.1 Add append-only JSONL persistence under `CODEX_HOME` or `~/.codex` with a versioned record format.
+- [x] 2.2 Add startup and periodic source scanning with byte-offset checkpoints, partial-line handling, and response-ID deduplication.
+- [x] 2.3 On first run, import only current-local-day records; on later runs, catch up from saved checkpoints without rewriting prior log rows.
 
 ## 3. Inspect and group response usage
 

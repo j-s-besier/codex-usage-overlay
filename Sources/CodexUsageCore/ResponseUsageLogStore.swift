@@ -40,6 +40,11 @@ public struct ResponseTokenUsageRecord: Codable, Hashable, Identifiable, Sendabl
         "\(sessionId ?? "unknown-session"):\(responseId)"
     }
 
+    public var occurredAt: Date? {
+        ISO8601DateFormatter().date(from: timestamp)
+            ?? Self.fractionalISO8601.date(from: timestamp)
+    }
+
     public init(
         schemaVersion: Int = 1,
         timestamp: String,
@@ -60,6 +65,69 @@ public struct ResponseTokenUsageRecord: Codable, Hashable, Identifiable, Sendabl
         self.model = model
         self.effort = effort
         self.usage = usage
+    }
+
+    private static var fractionalISO8601: ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }
+}
+
+public struct ResponseUsageGroup: Hashable, Identifiable, Sendable {
+    public let model: String
+    public let effort: String
+    public let records: [ResponseTokenUsageRecord]
+
+    public var id: String { "\(model)\u{1F}\(effort)" }
+
+    public var totals: ResponseTokenUsage {
+        ResponseTokenUsage(
+            inputTokens: sum(\.inputTokens),
+            cachedInputTokens: sum(\.cachedInputTokens),
+            cacheWriteInputTokens: sum(\.cacheWriteInputTokens),
+            outputTokens: sum(\.outputTokens),
+            reasoningOutputTokens: sum(\.reasoningOutputTokens),
+            totalTokens: sum(\.totalTokens)
+        )
+    }
+
+    public init(model: String, effort: String, records: [ResponseTokenUsageRecord]) {
+        self.model = model
+        self.effort = effort
+        self.records = records
+    }
+
+    private func sum(_ keyPath: KeyPath<ResponseTokenUsage, Int64?>) -> Int64? {
+        let values = records.compactMap { $0.usage[keyPath: keyPath] }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +)
+    }
+}
+
+public enum ResponseUsageGrouping {
+    public static func group(
+        _ records: [ResponseTokenUsageRecord],
+        on day: Date,
+        calendar: Calendar = .current
+    ) -> [ResponseUsageGroup] {
+        let dailyRecords = records.filter { record in
+            guard let timestamp = record.occurredAt else { return false }
+            return calendar.isDate(timestamp, inSameDayAs: day)
+        }
+        let grouped = Dictionary(grouping: dailyRecords) {
+            "\($0.model)\u{1F}\($0.effort)"
+        }
+        return grouped.values.compactMap { groupRecords in
+            guard let first = groupRecords.first else { return nil }
+            return ResponseUsageGroup(model: first.model, effort: first.effort, records: groupRecords.sorted {
+                $0.timestamp > $1.timestamp
+            })
+        }
+        .sorted {
+            if $0.model != $1.model { return $0.model.localizedCaseInsensitiveCompare($1.model) == .orderedAscending }
+            return $0.effort.localizedCaseInsensitiveCompare($1.effort) == .orderedAscending
+        }
     }
 }
 
@@ -260,8 +328,10 @@ public final class ResponseUsageLogStore: @unchecked Sendable {
 
     private func loadExistingLogIfNeeded() throws {
         guard !logLoaded else { return }
-        logLoaded = true
-        guard FileManager.default.fileExists(atPath: logURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: logURL.path) else {
+            logLoaded = true
+            return
+        }
         let data = try Data(contentsOf: logURL)
         let completeEnd = data.lastIndex(of: 0x0A).map { data.index(after: $0) } ?? data.startIndex
         if completeEnd < data.endIndex {
@@ -276,6 +346,7 @@ public final class ResponseUsageLogStore: @unchecked Sendable {
                 loadedRecords.append(record)
             }
         }
+        logLoaded = true
     }
 
     private var logLoaded = false
