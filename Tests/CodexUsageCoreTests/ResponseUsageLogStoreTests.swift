@@ -147,6 +147,25 @@ final class ResponseUsageLogStoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: ownedLog, encoding: .utf8).split(whereSeparator: \.isNewline).count, 1)
     }
 
+    func testSeparateCollectorsReloadNewRowsAndSharedCheckpoint() throws {
+        let now = Date()
+        let file = sessionFile("two-collectors.jsonl")
+        try writeLines([
+            turnContext(turnId: "turn-a", model: "gpt-6-sol", effort: "high"),
+            usageRecord(responseId: "first", turnId: "turn-a", timestamp: timestamp(now), total: 10)
+        ], to: file)
+        let first = ResponseUsageLogStore(codexHomeURL: codexHome)
+        XCTAssertEqual(try first.synchronize(now: now).count, 1)
+
+        appendLine(usageRecord(responseId: "second", turnId: "turn-a", timestamp: timestamp(now), total: 20), to: file)
+        let second = ResponseUsageLogStore(codexHomeURL: codexHome)
+        XCTAssertEqual(try second.synchronize(now: now).count, 2)
+        XCTAssertEqual(try first.synchronize(now: now).count, 2)
+
+        let saved = try String(contentsOf: first.logURL, encoding: .utf8)
+        XCTAssertEqual(saved.split(whereSeparator: \.isNewline).count, 2)
+    }
+
     private func sessionFile(_ name: String) -> URL {
         codexHome.appendingPathComponent("sessions", isDirectory: true).appendingPathComponent(name)
     }

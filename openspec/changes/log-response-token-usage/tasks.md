@@ -18,6 +18,6 @@
 
 ## 4. Verify behavior
 
-- [ ] 4.1 Add focused fixture-based tests for response parsing, turn-context association, overlapping token fields, and cumulative-versus-per-response usage.
-- [ ] 4.2 Add recovery tests for duplicate scans, restart catch-up, truncated files, and incomplete trailing lines.
+- [x] 4.1 Add focused fixture-based tests for response parsing, turn-context association, overlapping token fields, and cumulative-versus-per-response usage.
+- [x] 4.2 Add recovery tests for duplicate scans, restart catch-up, truncated files, and incomplete trailing lines.
 - [ ] 4.3 Build the macOS app and verify the inspector can open and group a populated local response log.

@@ -33,7 +33,7 @@ Preserve `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `out
 
 ### Write an app-owned JSONL file and checkpoint
 
-Append records to `response-token-usage.jsonl` in the configured Codex home directory (`CODEX_HOME`, falling back to `~/.codex`). Each line is a self-contained record with a schema version and source identifiers. Use the source session ID plus response ID as the idempotency key when both are present. Maintain a small local checkpoint file for source-file byte offsets and initial scan state. Write response rows before advancing the checkpoint; on recovery, use existing response IDs to skip rows appended before an interruption.
+Append records to `response-token-usage.jsonl` in the configured Codex home directory (`CODEX_HOME`, falling back to `~/.codex`). Each line is a self-contained record with a schema version and source identifiers. Use the source session ID plus response ID as the idempotency key when both are present. Maintain a local checkpoint file for source-file byte offsets and initial scan state. Acquire an operating-system file lock while refreshing the log, reading/updating checkpoints, and appending records so two app instances cannot race. Write response rows before advancing the checkpoint; on recovery, use existing response IDs to skip rows appended before an interruption.
 
 On the first run, import only records for the current local calendar day, matching the counter's existing daily scope. On later runs, read from saved offsets so records written while the app was stopped are caught up, even when the app restarts on a later day. If a source file shrinks or rotates, restart reading that file and rely on response IDs to prevent duplicates.
 
@@ -49,6 +49,7 @@ Write only timestamps, source identifiers, model/effort labels, and usage number
 
 - [Codex may change session JSONL field names or event ordering] → Decode only the required metadata fields, tolerate missing fields, and mark unavailable model/effort values as unknown rather than dropping usage.
 - [A crash may occur between appending a row and saving a checkpoint] → Append complete JSONL lines before checkpoint advancement and deduplicate from persisted response IDs during recovery.
+- [Two app instances may run at once] → Serialize collection through a local operating-system file lock and reload the shared checkpoint and any appended log rows while holding it.
 - [The response log grows with use] → Keep rows compact and metadata-only; defer retention controls until there is evidence they are needed.
 - [Session and response identifiers can reveal local activity structure] → Keep the file under the user's Codex home directory and never include conversation content or transmit it.
 - [Usage counters may be misunderstood as quota credits] → Label these as observed token counts and make no quota/limit claims in the inspector.
