@@ -5,9 +5,12 @@ let package = Package(
     name: "CodexUsageOverlay",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "CodexUsageOverlay", targets: ["CodexUsageOverlay"])
+        .executable(name: "CodexUsageOverlay", targets: ["CodexUsageOverlay"]),
+        .library(name: "CodexUsageCore", targets: ["CodexUsageCore"])
     ],
     targets: [
-        .executableTarget(name: "CodexUsageOverlay")
+        .target(name: "CodexUsageCore"),
+        .executableTarget(name: "CodexUsageOverlay", dependencies: ["CodexUsageCore"]),
+        .testTarget(name: "CodexUsageCoreTests", dependencies: ["CodexUsageCore"])
     ]
 )
