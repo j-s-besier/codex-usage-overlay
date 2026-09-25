@@ -30,7 +30,7 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.action = #selector(togglePopover)
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 270, height: 225)
+        popover.contentSize = NSSize(width: 270, height: 260)
         popover.contentViewController = NSHostingController(rootView: UsagePopoverView(usage: usage))
 
         usageObserver = usage.objectWillChange.sink { [weak self] in
@@ -158,6 +158,28 @@ final class UsageStore: ObservableObject {
         } catch {
             logOpenError = "Couldn't prepare the CSV file: \(error.localizedDescription)"
         }
+    }
+
+    func openResponseInspector() {
+        if let window = responseInspectorWindow, window.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Response Token Usage"
+        window.contentViewController = NSHostingController(rootView: ResponseUsageInspectorView(usage: self))
+        window.isReleasedWhenClosed = false
+        window.center()
+        responseInspectorWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -419,8 +441,30 @@ struct UsagePopoverView: View {
                 .help("Open the daily token history CSV")
             }
 
+            HStack {
+                Text("Response log")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    usage.openResponseInspector()
+                } label: {
+                    Label("Inspect", systemImage: "chart.bar.doc.horizontal")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Inspect response token usage by model and effort")
+            }
+
             if let logOpenError = usage.logOpenError {
                 Text(logOpenError)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let responseLogError = usage.responseLogError {
+                Text(responseLogError)
                     .font(.system(size: 10))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
@@ -450,5 +494,154 @@ struct UsagePopoverView: View {
         }
         .padding(14)
         .frame(width: 270)
+    }
+}
+
+private struct ResponseUsageInspectorView: View {
+    @ObservedObject var usage: UsageStore
+    @State private var selectedDay = Date()
+
+    private var dayRecords: [ResponseTokenUsageRecord] {
+        usage.responseRecords
+            .filter { record in
+                guard let date = record.occurredAt else { return false }
+                return Calendar.current.isDate(date, inSameDayAs: selectedDay)
+            }
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private var groups: [ResponseUsageGroup] {
+        ResponseUsageGrouping.group(usage.responseRecords, on: selectedDay)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Response token usage")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Local token metadata grouped by model and reasoning effort")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                DatePicker("Day", selection: $selectedDay, displayedComponents: .date)
+                    .labelsHidden()
+                    .datePickerStyle(.field)
+                    .frame(width: 120)
+            }
+
+            Divider()
+
+            if dayRecords.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar.xaxis")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("No response usage logged for this day")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("The app records usage from local Codex session files while Codex is running.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                HStack {
+                    Text("\(dayRecords.count.formatted()) responses")
+                    Spacer()
+                    Text("\(groups.count.formatted()) model/effort groups")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(groups) { group in
+                            DisclosureGroup {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(group.records) { record in
+                                        ResponseUsageRow(record: record)
+                                        if record.id != group.records.last?.id {
+                                            Divider().padding(.leading, 8)
+                                        }
+                                    }
+                                }
+                                .padding(.leading, 8)
+                            } label: {
+                                HStack(alignment: .center) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(group.model)
+                                            .font(.system(size: 13, weight: .semibold))
+                                        Text("effort: \(group.effort) · \(group.records.count.formatted()) responses")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(group.totals.totalTokens.map { $0.formatted() } ?? "—")
+                                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                        Text("total tokens")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 5)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 680, minHeight: 500)
+    }
+}
+
+private struct ResponseUsageRow: View {
+    let record: ResponseTokenUsageRecord
+
+    private var timeLabel: String {
+        record.occurredAt?.formatted(date: .omitted, time: .standard) ?? record.timestamp
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(timeLabel)
+                    .font(.system(size: 11, weight: .medium))
+                Text("response \(record.responseId)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                Text("\(record.usage.totalTokens?.formatted() ?? "—") tokens")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            }
+            HStack(spacing: 12) {
+                Text("Input \(display(record.usage.inputTokens))")
+                Text("Cached \(display(record.usage.cachedInputTokens))")
+                Text("Cache write \(display(record.usage.cacheWriteInputTokens))")
+            }
+            HStack(spacing: 12) {
+                Text("Output \(display(record.usage.outputTokens))")
+                Text("Reasoning \(display(record.usage.reasoningOutputTokens))")
+                Text("Total \(display(record.usage.totalTokens))")
+            }
+            HStack(spacing: 12) {
+                if let sessionId = record.sessionId { Text("Session \(sessionId)") }
+                if let threadId = record.threadId { Text("Thread \(threadId)") }
+            }
+            .foregroundStyle(.tertiary)
+            .textSelection(.enabled)
+        }
+        .font(.system(size: 10))
+        .padding(.vertical, 8)
+    }
+
+    private func display(_ value: Int64?) -> String {
+        value?.formatted() ?? "—"
     }
 }

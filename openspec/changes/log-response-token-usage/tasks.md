@@ -12,9 +12,9 @@
 
 ## 3. Inspect and group response usage
 
-- [ ] 3.1 Add a response usage inspector reachable from the menu bar app.
-- [ ] 3.2 Display response records and daily groups by model and reasoning effort, including unknown metadata groups.
-- [ ] 3.3 Show token breakdowns without adding cached input or reasoning output to totals a second time.
+- [x] 3.1 Add a response usage inspector reachable from the menu bar app.
+- [x] 3.2 Display response records and daily groups by model and reasoning effort, including unknown metadata groups.
+- [x] 3.3 Show token breakdowns without adding cached input or reasoning output to totals a second time.
 
 ## 4. Verify behavior
 
