@@ -2,6 +2,40 @@
 
 A small macOS menu bar extra that shows the remaining Codex usage reported by the local Codex App Server.
 
+## Install the app from a ZIP
+
+Download the `CodexUsageMenuBar-arm64.zip` build for Apple Silicon, the `x86_64` build for Intel, or a `universal` build when one is provided. Unzip it and drag **Codex Usage Menu Bar.app** to `/Applications` (or `~/Applications`), then double-click the app. It runs in the menu bar without a Dock icon. Downloaded builds require macOS 13 or later and the signed-in `codex` CLI; Swift and a source checkout are not required.
+
+These packages are **ad-hoc signed and not notarized**. Gatekeeper may block a downloaded build. For a build you trust, use the macOS **System Settings → Privacy & Security → Open Anyway** option after attempting to open it. The package script does not use any personal or company signing certificate. No download is published by the build script; maintainers distribute the generated ZIP separately.
+
+For account limits, the app finds `codex` in `/opt/homebrew/bin`, `/usr/local/bin`, or its process `PATH`. Finder does not inherit your shell environment. For a custom CLI location, set `CODEX_CLI_PATH` with `launchctl setenv CODEX_CLI_PATH /absolute/path/to/codex` before launching the app. Likewise, set `CODEX_HOME` with `launchctl setenv` if your logs use a custom location. These session settings need to be reapplied after logout. Sign in using `codex login` if needed.
+
+To follow Codex automatically and start monitoring at login, run the script from the **installed app** in Terminal:
+
+```sh
+"/Applications/Codex Usage Menu Bar.app/Contents/Resources/install-companion.sh"
+```
+
+Quit any manually launched copy before installing the companion. The companion records the installed app's absolute path; install the app in its final location first, and rerun the command after moving it. Remove the companion before deleting the app:
+
+```sh
+"/Applications/Codex Usage Menu Bar.app/Contents/Resources/uninstall-companion.sh"
+```
+
+Use your actual app path if you installed it elsewhere. The bundled scripts need neither Swift nor this repository. The companion checks for Codex every three seconds and starts or stops the menu bar process accordingly.
+
+## Build a downloadable package
+
+On macOS with Swift 5.9 or later:
+
+```sh
+./package-app.sh
+# Optional build for both Apple Silicon and Intel:
+ARCH=universal ./package-app.sh
+```
+
+The script builds in release mode, assembles and verifies an ad-hoc signed app bundle, and creates `dist/Codex Usage Menu Bar.app` and `dist/CodexUsageMenuBar-<architecture>.zip`. Native architecture is the default; `ARCH=arm64` and `ARCH=x86_64` select a specific target. Each build replaces the app bundle and the ZIP for that architecture. Generated app bundles, `dist/`, environment secrets, and local usage data are ignored by Git. A notarized public download would require a separate Developer ID signing and notarization process.
+
 ## Run
 
 Requirements: macOS 13 or later, Swift 5.9 or later, and the `codex` CLI signed into the same ChatGPT account as the Codex app.

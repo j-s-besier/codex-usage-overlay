@@ -2,4 +2,11 @@
 .swiftpm/
 DerivedData/
 *.app/
+dist/
+.env
+.env.*
+!.env.example
+daily-token-usage.csv
+response-token-usage.jsonl
+response-token-usage.state.json
 .DS_Store
