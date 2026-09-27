@@ -40,7 +40,7 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        usage?.flushTokenTotal()
+        usage?.stop()
     }
 
     @objc private func togglePopover() {
@@ -57,7 +57,7 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate {
         let title = NSMutableAttributedString()
         let font = NSFont.systemFont(ofSize: 13, weight: .regular)
 
-        let tokenText = usage.dailyTokens.map(TokenCountFormatter.compact) ?? "—"
+        let tokenText = usage.displayedDailyTokens.map(TokenCountFormatter.compact) ?? "—"
         title.append(NSAttributedString(string: tokenText, attributes: [
             .font: font,
             .foregroundColor: NSColor.labelColor
@@ -89,6 +89,7 @@ final class OverlayAppDelegate: NSObject, NSApplicationDelegate {
 final class UsageStore: ObservableObject {
     @Published private(set) var windows: [UsageWindow] = []
     @Published private(set) var dailyTokens: Int64?
+    @Published private(set) var displayedDailyTokens: Int64?
     @Published private(set) var responseRecords: [ResponseTokenUsageRecord] = []
     @Published private(set) var isLoading = false
     @Published private(set) var hasLoaded = false
@@ -96,28 +97,47 @@ final class UsageStore: ObservableObject {
     @Published private(set) var responseLogError: String?
 
     private var timer: Timer?
+    private var midnightTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    private var tokenWatcher: SessionLogChangeWatcher?
+    private var dailyTokenAnimationTask: Task<Void, Never>?
+    private var dailyTokenDay: Date?
     private let tokenCounter = LocalTokenUsageCounter()
     private let responseLog = ResponseUsageLogStore()
     private var responseInspectorWindow: NSWindow?
 
     init() {
-        refresh()
+        startTokenWatcherIfPossible()
+        refreshUsage(forceTokenReconciliation: false)
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.refreshUsage(forceTokenReconciliation: false) }
+        }
+        scheduleMidnightReconciliation()
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshDailyTokenTotal(reconcile: true) }
         }
     }
 
     func refresh() {
+        refreshUsage(forceTokenReconciliation: true)
+    }
+
+    private func refreshUsage(forceTokenReconciliation: Bool) {
+        startTokenWatcherIfPossible()
+        if forceTokenReconciliation || tokenWatcher == nil {
+            refreshDailyTokenTotal(reconcile: true)
+        }
         guard !isLoading else { return }
         isLoading = true
-        let tokenCounter = self.tokenCounter
         let responseLog = self.responseLog
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let responseResult = Result { try responseLog.synchronize() }
-            let result = Result {
-                try CodexUsageClient.fetch(dailyTokens: try? tokenCounter.todayTotal())
-            }
+            let result = Result { try CodexUsageClient.fetch() }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoading = false
@@ -134,10 +154,8 @@ final class UsageStore: ObservableObject {
                 switch result {
                 case .success(let snapshot):
                     self.windows = snapshot.windows
-                    self.dailyTokens = snapshot.dailyTokens
                 case .failure:
                     self.windows = []
-                    self.dailyTokens = nil
                 }
             }
         }
@@ -145,6 +163,116 @@ final class UsageStore: ObservableObject {
 
     func flushTokenTotal() {
         tokenCounter.flushLatestTotal()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        midnightTimer?.invalidate()
+        dailyTokenAnimationTask?.cancel()
+        tokenWatcher?.stop()
+        tokenWatcher = nil
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
+        flushTokenTotal()
+    }
+
+    private func startTokenWatcherIfPossible() {
+        guard tokenWatcher == nil else { return }
+        let watcher = SessionLogChangeWatcher(rootURL: tokenCounter.sessionsDirectoryURL) { [weak self] batch in
+            Task { @MainActor in self?.handleTokenFileChanges(batch) }
+        }
+        guard watcher.start() else { return }
+        tokenWatcher = watcher
+        refreshDailyTokenTotal(reconcile: true)
+    }
+
+    private func handleTokenFileChanges(_ batch: SessionLogChangeWatcher.ChangeBatch) {
+        guard batch.requiresReconciliation || !batch.changedFiles.isEmpty else { return }
+        if batch.rootWasChanged {
+            tokenWatcher?.stop()
+            tokenWatcher = nil
+            startTokenWatcherIfPossible()
+        }
+        refreshDailyTokenTotal(
+            reconcile: batch.requiresReconciliation,
+            changedFiles: batch.changedFiles
+        )
+    }
+
+    private func refreshDailyTokenTotal(reconcile: Bool, changedFiles: [URL] = []) {
+        let tokenCounter = self.tokenCounter
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let now = Date()
+            let result = Result {
+                if reconcile {
+                    return try tokenCounter.reconcileToday(now: now)
+                }
+                return try tokenCounter.processChangedFiles(changedFiles, now: now)
+            }
+            DispatchQueue.main.async {
+                guard let self, case .success(let total) = result else { return }
+                self.updateDailyTokens(total, for: Calendar.current.startOfDay(for: now))
+            }
+        }
+    }
+
+    private func scheduleMidnightReconciliation() {
+        midnightTimer?.invalidate()
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let nextMidnight = calendar.date(byAdding: .day, value: 1, to: today) else { return }
+        let timer = Timer(fire: nextMidnight, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.refreshDailyTokenTotal(reconcile: true)
+                self.scheduleMidnightReconciliation()
+            }
+        }
+        midnightTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func updateDailyTokens(_ total: Int64?, for day: Date) {
+        dailyTokens = total
+        guard let total else {
+            dailyTokenAnimationTask?.cancel()
+            displayedDailyTokens = nil
+            dailyTokenDay = day
+            return
+        }
+
+        let isFirstValue = displayedDailyTokens == nil
+        let isNewDay = dailyTokenDay != nil && dailyTokenDay != day
+        dailyTokenDay = day
+
+        guard !isFirstValue, !isNewDay, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            dailyTokenAnimationTask?.cancel()
+            displayedDailyTokens = total
+            return
+        }
+
+        guard displayedDailyTokens != total else { return }
+        dailyTokenAnimationTask?.cancel()
+        let startValue = displayedDailyTokens ?? total
+        dailyTokenAnimationTask = Task { @MainActor [weak self] in
+            let startTime = ProcessInfo.processInfo.systemUptime
+            let duration: TimeInterval = 0.25
+
+            while !Task.isCancelled {
+                if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                    self?.displayedDailyTokens = total
+                    return
+                }
+
+                let progress = min(1, (ProcessInfo.processInfo.systemUptime - startTime) / duration)
+                let interpolated = Double(startValue) + (Double(total) - Double(startValue)) * progress
+                self?.displayedDailyTokens = Int64(interpolated.rounded())
+                if progress >= 1 { return }
+                try? await Task.sleep(nanoseconds: 33_000_000)
+            }
+        }
     }
 
     func openDailyLog() {
@@ -238,11 +366,10 @@ private struct RateLimitsPayload: Decodable {
 
 private struct UsageSnapshot {
     let windows: [UsageWindow]
-    let dailyTokens: Int64?
 }
 
 private enum CodexUsageClient {
-    static func fetch(dailyTokens: Int64?) throws -> UsageSnapshot {
+    static func fetch() throws -> UsageSnapshot {
         let executable = try codexExecutablePath()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -296,7 +423,7 @@ private enum CodexUsageClient {
                     resetsAt: window.resetsAt.map(Date.init(timeIntervalSince1970:))
                 )
             }
-        return UsageSnapshot(windows: windows, dailyTokens: dailyTokens)
+        return UsageSnapshot(windows: windows)
     }
 
     private static func codexExecutablePath() throws -> String {
@@ -416,7 +543,7 @@ struct UsagePopoverView: View {
                 Text("Tokens today")
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let dailyTokens = usage.dailyTokens {
+                if let dailyTokens = usage.displayedDailyTokens {
                     Text(dailyTokens.formatted())
                         .fontWeight(.semibold)
                 } else {
@@ -497,99 +624,134 @@ struct UsagePopoverView: View {
     }
 }
 
+private enum InspectorPalette {
+    static let input = Color(red: 0.525, green: 0.839, blue: 0.608)
+    static let output = Color(red: 0.949, green: 0.545, blue: 0.510)
+    static let total = Color(red: 0.569, green: 0.722, blue: 1.0)
+    static let other = Color(red: 0.902, green: 0.804, blue: 0.471)
+
+    static func effort(_ raw: String) -> Color {
+        switch raw.lowercased() {
+        case "low": return output
+        case "medium": return Color(red: 0.953, green: 0.667, blue: 0.439)
+        case "high": return Color(red: 0.824, green: 0.851, blue: 0.502)
+        case "xhigh", "extra high", "max", "ultra": return input
+        default: return .secondary
+        }
+    }
+
+    static func effortLabel(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "xhigh", "extra high": return "Extra high"
+        case "", "unknown": return "Unknown"
+        default: return raw.capitalized
+        }
+    }
+}
+
+private enum InspectorMode: String, CaseIterable, Identifiable {
+    case responses = "Responses", model = "Model", session = "Session"
+    var id: String { rawValue }
+}
+
+private struct InspectorPresentationSnapshot: Sendable {
+    var records: [ResponseTokenUsageRecord] = []
+    var models: [ResponseModelSummary] = []
+    var sessions: [ResponseSessionSummary] = []
+}
+
 private struct ResponseUsageInspectorView: View {
     @ObservedObject var usage: UsageStore
     @State private var selectedDay = Date()
+    @State private var mode: InspectorMode = .responses
+    @State private var sourceRevision = 0
+    @State private var isPreparing = true
+    @State private var snapshot = InspectorPresentationSnapshot()
 
-    private var dayRecords: [ResponseTokenUsageRecord] {
-        usage.responseRecords
-            .filter { record in
-                guard let date = record.occurredAt else { return false }
-                return Calendar.current.isDate(date, inSameDayAs: selectedDay)
-            }
-            .sorted { $0.timestamp > $1.timestamp }
+    private var preparationKey: String {
+        "\(sourceRevision):\(selectedDay.timeIntervalSinceReferenceDate)"
     }
 
-    private var groups: [ResponseUsageGroup] {
-        ResponseUsageGrouping.group(usage.responseRecords, on: selectedDay)
+    private var records: [ResponseTokenUsageRecord] {
+        snapshot.records
+    }
+
+    private var countLabel: String {
+        if mode == .model {
+            return "\(snapshot.models.count.formatted()) models used"
+        }
+        return "\(records.count.formatted()) responses · newest first"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Response token usage")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text("Local token metadata grouped by model and reasoning effort")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                    Text("Response token usage").font(.system(size: 18, weight: .semibold))
+                    Text("Local response usage by response, model, or session")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 DatePicker("Day", selection: $selectedDay, displayedComponents: .date)
-                    .labelsHidden()
-                    .datePickerStyle(.field)
-                    .frame(width: 120)
+                    .labelsHidden().datePickerStyle(.field).frame(width: 120)
             }
-
             Divider()
-
-            if dayRecords.isEmpty {
+            HStack {
+                Text(countLabel)
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                Spacer()
+                Picker("Group by", selection: $mode) {
+                    ForEach(InspectorMode.allCases) { value in Text(value.rawValue).tag(value) }
+                }
+                .pickerStyle(.segmented).frame(width: 270)
+            }
+            if isPreparing {
+                ProgressView("Preparing response usage…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if records.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "chart.bar.xaxis")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                    Text("No response usage logged for this day")
-                        .font(.system(size: 13, weight: .medium))
+                    Image(systemName: "chart.bar.xaxis").font(.system(size: 28)).foregroundStyle(.secondary)
+                    Text("No response usage logged for this day").font(.system(size: 13, weight: .medium))
                     Text("The app records usage from local Codex session files while Codex is running.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                HStack {
-                    Text("\(dayRecords.count.formatted()) responses")
-                    Spacer()
-                    Text("\(groups.count.formatted()) model/effort groups")
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(groups) { group in
-                            DisclosureGroup {
-                                VStack(alignment: .leading, spacing: 0) {
-                                    ForEach(group.records) { record in
-                                        ResponseUsageRow(record: record)
-                                        if record.id != group.records.last?.id {
-                                            Divider().padding(.leading, 8)
+                    switch mode {
+                    case .responses:
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(records) { ResponseUsageRow(record: $0, showsModel: true) }
+                        }
+                    case .model:
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(snapshot.models) { ModelUsageRow(model: $0) }
+                        }
+                    case .session:
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(snapshot.sessions) { session in
+                                DisclosureGroup {
+                                    LazyVStack(alignment: .leading, spacing: 7) {
+                                        ForEach(session.threads) { thread in
+                                            DisclosureGroup {
+                                                LazyVStack(alignment: .leading, spacing: 0) {
+                                                    ForEach(thread.records) { ResponseUsageRow(record: $0, showsModel: true) }
+                                                }
+                                            } label: {
+                                                UsageGroupLabel(name: thread.id, detail: "\(thread.records.count) responses", total: thread.totals.total)
+                                            }
+                                            .padding(8)
+                                            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 7))
                                         }
-                                    }
+                                    }.padding(.leading, 8)
+                                } label: {
+                                    UsageGroupLabel(name: session.displayName,
+                                        detail: "\(session.threads.count) threads · \(session.records.count) responses",
+                                        total: session.totals.total)
                                 }
-                                .padding(.leading, 8)
-                            } label: {
-                                HStack(alignment: .center) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(group.model)
-                                            .font(.system(size: 13, weight: .semibold))
-                                        Text("effort: \(group.effort) · \(group.records.count.formatted()) responses")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(group.totals.totalTokens.map { $0.formatted() } ?? "—")
-                                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                                        Text("total tokens")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 5)
+                                .padding(10)
+                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
                         }
                     }
                 }
@@ -597,51 +759,150 @@ private struct ResponseUsageInspectorView: View {
         }
         .padding(16)
         .frame(minWidth: 680, minHeight: 500)
+        .onChange(of: usage.responseRecords) { _ in sourceRevision += 1 }
+        .task(id: preparationKey) {
+            isPreparing = true
+            let sourceRecords = usage.responseRecords
+            let day = selectedDay
+            let prepared = await Task.detached(priority: .userInitiated) {
+                let records = ResponseUsagePresentation.responses(sourceRecords, on: day)
+                let models = ResponseUsagePresentation.models(records)
+                let sessions = ResponseUsagePresentation.sessions(records, names: SessionIndexNames.read())
+                return InspectorPresentationSnapshot(records: records, models: models, sessions: sessions)
+            }.value
+            guard !Task.isCancelled else { return }
+            snapshot = prepared
+            isPreparing = false
+        }
+    }
+}
+
+private struct UsageGroupLabel: View {
+    let name: String
+    let detail: String
+    let total: Int64?
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(detail).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(total?.formatted() ?? "—").font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(InspectorPalette.total)
+                Text("Total tokens").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ModelUsageRow: View {
+    let model: ResponseModelSummary
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !model.capabilityListAvailable {
+                    Text("Supported effort list unavailable; showing observed usage")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                ForEach(model.efforts) { effort in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(effort.label).font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(InspectorPalette.effort(effort.id))
+                        HStack(spacing: 4) {
+                            metric("Input", effort.totals.input, color: InspectorPalette.input)
+                            metric("Output", effort.totals.output, color: InspectorPalette.output)
+                            metric("Total", effort.totals.total, color: InspectorPalette.total)
+                        }
+                    }
+                    if effort.id != model.efforts.last?.id { Divider() }
+                }
+            }
+            .padding(.top, 7)
+            .padding(.bottom, 5)
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.displayName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text("\(model.records.count.formatted()) responses · \(model.efforts.count.formatted()) efforts")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(model.totals.total?.formatted() ?? "—")
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(InspectorPalette.total)
+                    Text("Total tokens").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+                Text(expanded ? "Show less" : "Show more")
+                    .font(.system(size: 10)).foregroundStyle(.purple).fixedSize()
+            }
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func metric(_ label: String, _ value: Int64?, color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(value?.formatted() ?? "—").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.75)
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
 private struct ResponseUsageRow: View {
     let record: ResponseTokenUsageRecord
-
-    private var timeLabel: String {
-        record.occurredAt?.formatted(date: .omitted, time: .standard) ?? record.timestamp
-    }
+    let showsModel: Bool
+    @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(record.responseId).font(.system(size: 11, design: .monospaced))
+                .lineLimit(1).textSelection(.enabled)
             HStack(spacing: 6) {
-                Text(timeLabel)
-                    .font(.system(size: 11, weight: .medium))
-                Text("response \(record.responseId)")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                Text(record.occurredAt?.formatted(date: .omitted, time: .standard) ?? record.timestamp)
+                if showsModel { Text(record.model) }
+                Text("· \(InspectorPalette.effortLabel(record.effort))")
+                    .foregroundStyle(InspectorPalette.effort(record.effort))
+            }
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(spacing: 14) {
+                token("Input", record.usage.inputTokens, color: InspectorPalette.input)
+                token("Output", record.usage.outputTokens, color: InspectorPalette.output)
+                token("Total", record.usage.totalTokens, color: InspectorPalette.total)
+                Spacer(minLength: 0)
+                Button(expanded ? "Less info" : "More info") { expanded.toggle() }
+                    .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.purple)
+                    .accessibilityLabel(expanded ? "Hide response details" : "Show response details")
+            }
+            if expanded {
+                HStack(spacing: 13) {
+                    token("Cached input", record.usage.cachedInputTokens, color: InspectorPalette.other)
+                    token("Cache write input", record.usage.cacheWriteInputTokens, color: InspectorPalette.other)
+                    token("Reasoning output", record.usage.reasoningOutputTokens, color: InspectorPalette.other)
+                }
+                .font(.system(size: 10))
+                Text("Session \(record.sessionId ?? "—") · Thread \(record.threadId ?? "—")")
+                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
                     .textSelection(.enabled)
-                Spacer()
-                Text("\(record.usage.totalTokens?.formatted() ?? "—") tokens")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
             }
-            HStack(spacing: 12) {
-                Text("Input \(display(record.usage.inputTokens))")
-                Text("Cached \(display(record.usage.cachedInputTokens))")
-                Text("Cache write \(display(record.usage.cacheWriteInputTokens))")
-            }
-            HStack(spacing: 12) {
-                Text("Output \(display(record.usage.outputTokens))")
-                Text("Reasoning \(display(record.usage.reasoningOutputTokens))")
-                Text("Total \(display(record.usage.totalTokens))")
-            }
-            HStack(spacing: 12) {
-                if let sessionId = record.sessionId { Text("Session \(sessionId)") }
-                if let threadId = record.threadId { Text("Thread \(threadId)") }
-            }
-            .foregroundStyle(.tertiary)
-            .textSelection(.enabled)
         }
-        .font(.system(size: 10))
-        .padding(.vertical, 8)
+        .padding(.vertical, 9).padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
-    private func display(_ value: Int64?) -> String {
-        value?.formatted() ?? "—"
+    private func token(_ label: String, _ value: Int64?, color: Color) -> some View {
+        Text("\(label) \(value?.formatted() ?? "—")")
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(color)
+            .accessibilityLabel("\(label) tokens, \(value?.formatted() ?? "unavailable")")
     }
 }

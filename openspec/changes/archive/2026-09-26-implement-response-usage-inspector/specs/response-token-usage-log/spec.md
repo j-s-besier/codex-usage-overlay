@@ -1,48 +1,4 @@
-# response-token-usage-log Specification
-
-## Purpose
-TBD - created by archiving change log-response-token-usage. Update Purpose after archive.
-## Requirements
-### Requirement: Persist one metadata record per model response
-The counter SHALL read per-response usage from local Codex session logs and persist one JSONL record for each response that contains token usage. Each record SHALL include the source timestamp, response ID, turn ID, session and thread IDs when available, model, reasoning effort, and the available input, cached-input, cache-write-input, output, reasoning-output, and total-token values. Missing model or effort metadata SHALL NOT cause an otherwise valid usage record to be discarded.
-
-#### Scenario: A response has complete metadata
-- **WHEN** a session log contains a response usage record and matching turn context
-- **THEN** the app-owned log contains one record with that response's usage and matching model and effort
-
-#### Scenario: A response lacks model or effort metadata
-- **WHEN** a session log contains usage but the corresponding model or effort cannot be determined
-- **THEN** the app-owned log records the usage and marks the unavailable metadata as unknown
-
-#### Scenario: Token dimensions overlap
-- **WHEN** the app records cached input or reasoning output values
-- **THEN** it preserves those values as breakdowns and does not add them a second time to the reported total
-
-### Requirement: Recover response logging without duplicates
-The counter SHALL recover response records written to source session logs while the app was not running. It SHALL avoid writing a response more than once, using stable source identifiers when available, and SHALL continue logging after restart or partial source-file writes.
-
-#### Scenario: First run begins today's response history
-- **WHEN** the app-owned response log does not yet exist
-- **THEN** the app records available response usage from the current local day without importing older history
-
-#### Scenario: App restarts after missing source updates
-- **WHEN** source session logs contain responses written since the app's last successful scan
-- **THEN** the app-owned log catches up with those responses and preserves prior log entries
-
-#### Scenario: A source record is processed again
-- **WHEN** startup recovery or a repeated scan encounters a response already present in the app-owned log
-- **THEN** the app does not append a duplicate response record
-
-#### Scenario: A source file ends with an incomplete JSONL line
-- **WHEN** the app reads a source file whose final record is incomplete
-- **THEN** the app waits for the line to complete before recording it
-
-### Requirement: Keep response usage local and metadata-only
-The counter SHALL store the response log under the configured Codex home directory and SHALL NOT copy prompt text, assistant text, or tool input/output into the app-owned log. Logging SHALL use local files only and SHALL NOT make network requests for response usage.
-
-#### Scenario: The app writes a response record
-- **WHEN** the app persists response usage
-- **THEN** it writes token metadata and identifiers locally without message or tool content
+## MODIFIED Requirements
 
 ### Requirement: Inspect and group response usage
 The app SHALL let the user inspect response-level token records for a selected local calendar day in Responses, Model, or Session view. Responses SHALL be the default view and SHALL be sorted newest first. The app SHALL compute displayed totals from each response's `usage` values, without adding cached-input or reasoning-output breakdowns a second time.
@@ -85,6 +41,8 @@ In Session view, the app SHALL group responses by session and show any available
 - **WHEN** the user selects a local calendar day with no response records
 - **THEN** the app displays an empty state rather than a fabricated zero-usage response
 
+## ADDED Requirements
+
 ### Requirement: Resolve session names from local metadata
 The app SHALL resolve session display names from the local Codex session index using session identifiers. It SHALL read only the index fields required to associate an identifier with its thread name, SHALL NOT copy conversation content into the response log, and SHALL continue to show sessions if the index is missing or unreadable.
 
@@ -106,4 +64,3 @@ The app SHALL prepare the selected day's filtered records, group summaries, tota
 #### Scenario: Source data changes
 - **WHEN** the selected day or source response records change while the inspector is open
 - **THEN** the app prepares a new snapshot away from the main UI actor and displays a loading state until the matching snapshot is ready
-

@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Response Token Usage</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --window: #232427;
+      --content: #202124;
+      --raised: #2a2b2f;
+      --line: #3a3b40;
+      --text: #e9e9eb;
+      --secondary: #a3a4ab;
+      --tertiary: #777981;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; min-height: 100vh; padding: 24px; color: var(--text); background: #17181a; font-size: 13px; }
+    button, input { color: inherit; font: inherit; }
+    .window { width: min(760px, 100%); height: min(620px, calc(100vh - 48px)); min-height: 420px; margin: 0 auto; overflow: hidden; border: 1px solid #48494d; border-radius: 10px; background: var(--window); box-shadow: 0 18px 60px #0008; display: flex; flex-direction: column; }
+    .titlebar { position: relative; height: 39px; flex: none; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #3b3c40; background: #28292c; color: #dddde0; font-size: 12px; font-weight: 550; }
+    .traffic { display: flex; gap: 7px; position: absolute; left: 13px; top: 13px; }
+    .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #626367; }
+    .content { padding: 16px; min-height: 0; flex: 1; display: flex; flex-direction: column; }
+    .header { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 43px; }
+    h1 { margin: 0 0 3px; font-size: 18px; line-height: 1.2; font-weight: 620; letter-spacing: -.15px; }
+    .subtitle { color: var(--secondary); font-size: 12px; }
+    .date { width: 120px; height: 25px; border: 1px solid #4b4c50; border-radius: 5px; padding: 3px 7px; background: #292a2e; font-size: 11px; display: flex; align-items: center; justify-content: space-between; white-space: nowrap; }
+    .date span:last-child { color: var(--secondary); font-size: 10px; }
+    .divider { height: 1px; flex: none; background: var(--line); margin: 12px 0; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0 2px 9px; }
+    .counts { color: var(--secondary); font-size: 11px; font-weight: 550; white-space: nowrap; }
+    .grouping-control { display: flex; align-items: center; gap: 7px; color: var(--secondary); font-size: 10px; }
+    .segmented { display: flex; padding: 2px; border: 1px solid #414247; border-radius: 7px; background: #1b1c1f; }
+    .segmented button { padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--secondary); font-size: 10px; cursor: pointer; white-space: nowrap; }
+    .segmented button:hover { color: var(--text); }
+    .segmented button.active { background: #3a3b40; color: var(--text); }
+    .scroll { min-height: 0; flex: 1; overflow-y: auto; scrollbar-color: #54555b transparent; padding: 0 2px 1px; }
+    .response { padding: 10px 8px 11px; border-bottom: 1px solid #414247; font-size: 10px; }
+    .response:first-child { padding-top: 4px; }
+    .response-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    .response-id { min-width: 0; overflow: hidden; color: var(--text); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .response-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 5px; color: var(--secondary); }
+    .primary-tokens { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 8px; font-size: 11px; }
+    .token-input { color: #86d69b; }
+    .token-output { color: #f28b82; }
+    .token-total { color: #91b8ff; }
+    .metrics .token-other, .metrics .token-other strong { color: #e6cd78; }
+    .primary-tokens strong { font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .more-info { margin-left: auto; padding: 0; border: 0; background: transparent; color: #bdb0e5; font-size: 10px; cursor: pointer; }
+    .more-info:hover { color: #d4c8f7; text-decoration: underline; }
+    .response-details { display: none; padding-top: 2px; }
+    .response.expanded .response-details { display: block; }
+    .usage-group { margin-bottom: 8px; overflow: hidden; border: 1px solid #3b3c41; border-radius: 8px; background: #2a2b2f; }
+    .group-toggle { display: flex; width: 100%; min-height: 50px; align-items: center; gap: 8px; padding: 7px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+    .group-toggle:hover { background: #303136; }
+    .group-chevron { width: 12px; color: var(--secondary); font-size: 14px; transition: transform .15s; }
+    .usage-group.open > .group-toggle .group-chevron { transform: rotate(90deg); }
+    .group-heading { min-width: 0; flex: 1; }
+    .group-label { display: block; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
+    .group-subtitle { display: block; margin-top: 3px; color: var(--secondary); font-size: 10px; }
+    .group-sum { text-align: right; white-space: nowrap; }
+    .group-sum strong { display: block; color: #91b8ff; font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .group-sum span { color: var(--secondary); font-size: 9px; }
+    .usage-group-records { display: none; padding: 0 9px; border-top: 1px solid #414247; }
+    .usage-group.open > .usage-group-records { display: block; }
+    .session-thread { margin: 7px 0; border-color: #46474c; background: #25262a; }
+    .session-thread .group-toggle { min-height: 44px; }
+    .session-thread .group-label { font-size: 11px; }
+    .session-thread .usage-group-records { padding: 0 7px; }
+    .model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; align-content: start; align-items: start; }
+    .model-card { display: flex; width: 100%; aspect-ratio: 1.8 / 1; min-width: 0; flex-direction: column; padding: 8px; border: 1px solid #3b3c41; border-radius: 9px; background: #2a2b2f; text-align: center; }
+    .model-card-head { display: flex; height: 50%; min-width: 0; flex: 0 0 50%; flex-direction: column; align-items: center; justify-content: center; gap: 5px; box-sizing: border-box; }
+    .model-card-head strong { min-width: 0; overflow: hidden; color: var(--text); font-size: 15px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .model-card.expanded { height: auto; aspect-ratio: auto; }
+    .model-card.expanded .model-card-head { height: auto; flex-basis: auto; padding: 4px 0 12px; }
+    .model-card-summary { margin-top: auto; text-align: center; }
+    .model-card.expanded .model-card-summary { margin-top: 12px; }
+    .model-card-total { text-align: center; }
+    .model-card-total span { display: block; margin-top: 3px; color: var(--secondary); font-size: 10px; }
+    .model-card-total strong { display: block; color: #91b8ff; font: 650 16px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .model-more { margin-top: 5px; padding: 0; border: 0; background: transparent; color: #bdb0e5; font-size: 10px; cursor: pointer; }
+    .model-more:hover { color: #d4c8f7; text-decoration: underline; }
+    .model-breakdown { display: none; margin-top: 10px; padding-top: 3px; border-top: 1px solid #414247; }
+    .model-card.expanded .model-breakdown { display: block; }
+    .effort-breakdown { padding: 8px 0; border-bottom: 1px solid #393a3f; }
+    .effort-breakdown:last-child { border-bottom: 0; }
+    .effort-breakdown-title { margin-bottom: 7px; text-align: left; font-size: 10px; font-weight: 570; }
+    .effort-breakdown-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+    .effort-breakdown-stat { min-width: 0; text-align: center; }
+    .effort-breakdown-stat strong { display: block; overflow: hidden; font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; }
+    .effort-breakdown-stat span { display: block; margin-top: 4px; color: var(--secondary); font-size: 9px; }
+    .effort-breakdown-stat .token-input { color: #86d69b; }
+    .effort-breakdown-stat .token-output { color: #f28b82; }
+    .effort-breakdown-stat .token-total { color: #91b8ff; }
+    .effort-level { font-weight: 570; }
+    .effort-low { color: #f28b82; }
+    .effort-medium { color: #f3aa70; }
+    .effort-high { color: #d2d980; }
+    .effort-extra-high { color: #86d69b; }
+    .effort-unknown { color: var(--secondary); font-weight: 400; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 6px; color: var(--secondary); }
+    .metrics strong { color: #d6d6da; font-weight: 500; }
+    .ids { color: var(--tertiary); margin-top: 6px; overflow-wrap: anywhere; }
+    .empty { display: none; height: 100%; min-height: 250px; align-items: center; justify-content: center; flex-direction: column; gap: 7px; color: var(--secondary); text-align: center; }
+    .empty strong { color: var(--text); font-size: 13px; }
+    .empty span { font-size: 11px; }
+    @media (max-width: 560px) {
+      body { padding: 0; }
+      .window { height: 100vh; min-height: 100vh; border: 0; border-radius: 0; }
+      .content { padding: 14px 12px; }
+      .header { align-items: flex-start; }
+      .date { width: 104px; }
+      .toolbar { align-items: flex-start; flex-direction: column; }
+      .grouping-control { width: 100%; justify-content: space-between; }
+      .segmented button { padding-right: 6px; padding-left: 6px; }
+      .response-head { flex-wrap: wrap; }
+      .more-info { margin-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="window" aria-label="Response Token Usage window">
+    <div class="titlebar"><span class="traffic"><i></i><i></i><i></i></span>Response Token Usage</div>
+    <section class="content">
+      <header class="header">
+        <div>
+          <h1>Response token usage</h1>
+          <div class="subtitle">Local token metadata from Codex responses</div>
+        </div>
+        <button class="date" id="date" aria-label="Selected day, September 25, 2026">
+          <span id="dateLabel">9/25/26</span><span>▦</span>
+        </button>
+      </header>
+      <div class="divider"></div>
+      <div class="toolbar">
+        <div class="counts" id="responseCount">12 responses · newest first</div>
+        <div class="grouping-control"><span>Group by</span><div class="segmented" role="group" aria-label="Group responses by">
+          <button type="button" data-group="responses" class="active" aria-pressed="true">Responses</button>
+          <button type="button" data-group="model" aria-pressed="false">Model</button>
+          <button type="button" data-group="session" aria-pressed="false">Session</button>
+        </div></div>
+      </div>
+      <div class="scroll" id="scroll">
+        <div id="groups"></div>
+        <div class="empty" id="empty"><strong>No response usage logged for this day</strong><span>The app records usage from local Codex session files while Codex is running.</span></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    // Synthetic records shaped like the app's response log; no local usage data is loaded.
+    const groups = [
+      { model: "GPT-6 Luna", effort: "medium", records: [
+        { time: "6:42:16 PM", id: "resp_9e2c8f31-a18f", total: 22450, input: 18240, cached: 12400, cacheWrite: 0, output: 4210, reasoning: 2310, session: "ses_74c8…31ab", thread: "thr_218f…e912" },
+        { time: "6:36:02 PM", id: "resp_106bc521-8c01", total: 44430, input: 35810, cached: 28400, cacheWrite: 0, output: 8620, reasoning: 5180, session: "ses_74c8…31ab", thread: "thr_218f…e912" }
+      ]},
+      { model: "GPT-6 Sol", effort: "high", records: [
+        { time: "6:12:49 PM", id: "resp_99af47d2-725d", total: 81040, input: 62500, cached: 41900, cacheWrite: 1200, output: 18540, reasoning: 13900, session: "ses_74c8…31ab", thread: "thr_7f91…2bc0" },
+        { time: "4:59:17 PM", id: "resp_c382118a-44bd", total: 102800, input: 78600, cached: 52900, cacheWrite: 2000, output: 24200, reasoning: 18600, session: "ses_74c8…31ab", thread: "thr_7f91…2bc0" }
+      ]},
+      { model: "GPT-6 Sol", effort: "extra high", records: [
+        { time: "3:38:26 PM", id: "resp_174a3081-78bf", total: 92600, input: 70400, cached: 51200, cacheWrite: 1600, output: 22200, reasoning: 17900, session: "ses_74c8…31ab", thread: "thr_7f91…2bc0" },
+        { time: "2:56:14 PM", id: "resp_735e9c10-33a2", total: 68900, input: 53900, cached: 38200, cacheWrite: 800, output: 15000, reasoning: 11900, session: "ses_74c8…31ab", thread: "thr_7f91…2bc0" }
+      ]},
+      { model: "GPT-5.6 Luna", effort: "medium", records: [
+        { time: "5:41:32 PM", id: "resp_a34c8972-1802", total: 28420, input: 24780, cached: 17500, cacheWrite: 0, output: 3640, reasoning: 1840, session: "ses_91d2…4f11", thread: "thr_039a…4da7" },
+        { time: "4:18:09 PM", id: "resp_87f41dc0-18d3", total: 37300, input: 31200, cached: 22100, cacheWrite: 0, output: 6100, reasoning: 3320, session: "ses_91d2…4f11", thread: "thr_039a…4da7" }
+      ]},
+      { model: "GPT-6 Luna", effort: "low", records: [
+        { time: "5:58:11 PM", id: "resp_710d225c-e104", total: 10350, input: 9130, cached: 0, cacheWrite: 0, output: 1220, reasoning: 210, session: "ses_74c8…31ab", thread: "thr_218f…e912" },
+        { time: "2:48:50 PM", id: "resp_f91de620-ce72", total: 12700, input: 10820, cached: 6200, cacheWrite: 0, output: 1880, reasoning: 410, session: "ses_74c8…31ab", thread: "thr_218f…e912" }
+      ]},
+      { model: "GPT-6 Luna", effort: "unknown", records: [
+        { time: "4:44:55 PM", id: "resp_5bb0f18d-89c2", total: 8260, input: 7310, cached: 0, cacheWrite: 0, output: 950, reasoning: null, session: "ses_74c8…31ab", thread: "thr_218f…e912" },
+        { time: "1:30:21 PM", id: "resp_78308a50-1450", total: 5840, input: 5020, cached: null, cacheWrite: null, output: 820, reasoning: null, session: "ses_74c8…31ab", thread: "thr_218f…e912" }
+      ]}
+    ];
+    const responses = groups.flatMap(group => group.records.map(record => ({ ...record, model: group.model, effort: group.effort })));
+    const sessionNames = new Map([
+      ["ses_74c8…31ab", "Response usage inspector"],
+      ["ses_91d2…4f11", "Daily token counter"]
+    ]);
+    const number = value => value == null ? "—" : value.toLocaleString("en-US");
+    const effortRank = effort => ({ ultra: 6, max: 5, "extra high": 4, xhigh: 4, high: 3, medium: 2, low: 1, minimal: 0, unknown: -1 })[effort.toLowerCase()] ?? -1;
+    // Synthetic capability matrix for the preview; each model card lists every supported level.
+    const reasoningEffortsByModel = new Map([
+      ["GPT-6 Luna", ["extra high", "high", "medium", "low"]],
+      ["GPT-6 Sol", ["extra high", "high", "medium", "low"]],
+      ["GPT-5.6 Luna", ["extra high", "high", "medium", "low"]]
+    ]);
+    const timeRank = time => {
+      const [, h, m, s, meridiem] = time.match(/^(\d+):(\d+):(\d+)\s(AM|PM)$/i) || [];
+      if (!h) return 0;
+      const hour = (Number(h) % 12) + (meridiem.toUpperCase() === "PM" ? 12 : 0);
+      return hour * 3600 + Number(m) * 60 + Number(s);
+    };
+    function responseMarkup(record) {
+      const effortClass = record.effort.toLowerCase().replace(/\s+/g, "-");
+      return `<article class="response">
+        <div class="response-head"><span class="response-id">${record.id}</span></div>
+        <div class="response-meta"><span>${record.time}</span><span>${record.model}</span><span>·</span><span class="effort-level effort-${effortClass}">${record.effort}</span></div>
+        <div class="primary-tokens"><span class="token-input">Input <strong>${number(record.input)}</strong></span><span class="token-output">Output <strong>${number(record.output)}</strong></span><span class="token-total">Total <strong>${number(record.total)}</strong></span><button class="more-info" type="button" aria-expanded="false">More info</button></div>
+        <div class="response-details"><div class="metrics"><span class="token-other">Cached input <strong>${number(record.cached)}</strong></span><span class="token-other">Cache write input <strong>${number(record.cacheWrite)}</strong></span></div><div class="metrics"><span class="token-other">Reasoning output <strong>${number(record.reasoning)}</strong></span></div><div class="ids">Session ${record.session} &nbsp; Thread ${record.thread}</div></div>
+      </article>`;
+    }
+    let groupingMode = "responses";
+    function bucketRecords(records, keyFor) {
+      const buckets = new Map();
+      records.forEach(record => {
+        const label = keyFor(record);
+        if (!buckets.has(label)) buckets.set(label, []);
+        buckets.get(label).push(record);
+      });
+      return [...buckets.entries()].map(([label, items]) => ({
+        label,
+        items: items.sort((a, b) => timeRank(b.time) - timeRank(a.time)),
+        latest: Math.max(...items.map(record => timeRank(record.time))),
+        total: items.reduce((sum, record) => sum + (record.total || 0), 0)
+      })).sort((a, b) => b.latest - a.latest || a.label.localeCompare(b.label));
+    }
+    function renderModelGrid(records) {
+      const models = bucketRecords(records, record => record.model || "Unknown model");
+      return `<div class="model-grid">${models.map(group => {
+        const observedEfforts = bucketRecords(group.items, record => record.effort || "unknown");
+        const effortByName = new Map(observedEfforts.map(effort => [effort.label, effort]));
+        const supportedEfforts = reasoningEffortsByModel.get(group.label) || ["extra high", "high", "medium", "low"];
+        const effortNames = [...new Set([...supportedEfforts, ...effortByName.keys()])]
+          .sort((a, b) => effortRank(b) - effortRank(a) || a.localeCompare(b));
+        const efforts = effortNames.map(label => effortByName.get(label) || { label, items: [] });
+        const sum = (items, key) => items.reduce((total, record) => total + (record[key] || 0), 0);
+        return `<article class="model-card">
+          <div class="model-card-head"><strong>${group.label}</strong></div>
+          <div class="model-card-summary"><div class="model-card-total"><strong>${number(sum(group.items, "total"))}</strong><span>Total tokens</span></div><button class="model-more" type="button" aria-expanded="false">Show more</button></div>
+          <div class="model-breakdown">${efforts.map(effort => {
+            const effortClass = effort.label.toLowerCase().replace(/\s+/g, "-");
+            return `<section class="effort-breakdown">
+              <div class="effort-breakdown-title effort-${effortClass}">${effort.label}</div>
+              <div class="effort-breakdown-stats">
+                <div class="effort-breakdown-stat"><strong class="token-input">${number(sum(effort.items, "input"))}</strong><span>Input</span></div>
+                <div class="effort-breakdown-stat"><strong class="token-output">${number(sum(effort.items, "output"))}</strong><span>Output</span></div>
+                <div class="effort-breakdown-stat"><strong class="token-total">${number(sum(effort.items, "total"))}</strong><span>Total</span></div>
+              </div>
+            </section>`;
+          }).join("")}</div>
+        </article>`;
+      }).join("")}</div>`;
+    }
+    function renderSessions(records) {
+      return bucketRecords(records, record => record.session || "Unknown session").map(session => {
+        const sessionKey = `session:${session.label}`;
+        const sessionName = sessionNames.get(session.label) || "Untitled session";
+        const threads = bucketRecords(session.items, record => record.thread || "Unknown thread");
+        return `<section class="usage-group ${expandedGroups.has(sessionKey) ? "open" : ""}">
+          <button class="group-toggle" type="button" aria-expanded="${expandedGroups.has(sessionKey)}" data-key="${sessionKey}">
+            <span class="group-chevron">›</span><span class="group-heading"><span class="group-label">${sessionName}</span><span class="group-subtitle">${session.label} · ${session.items.length} responses · ${threads.length} threads</span></span>
+            <span class="group-sum"><strong>${number(session.total)}</strong><span>total tokens</span></span>
+          </button><div class="usage-group-records">${threads.map(thread => {
+            const threadKey = `session-thread:${session.label}:${thread.label}`;
+            return `<section class="usage-group session-thread ${expandedGroups.has(threadKey) ? "open" : ""}">
+              <button class="group-toggle" type="button" aria-expanded="${expandedGroups.has(threadKey)}" data-key="${threadKey}">
+                <span class="group-chevron">›</span><span class="group-heading"><span class="group-label">Thread · ${thread.label}</span><span class="group-subtitle">${thread.items.length} responses</span></span>
+                <span class="group-sum"><strong>${number(thread.total)}</strong><span>total tokens</span></span>
+              </button><div class="usage-group-records">${thread.items.map(responseMarkup).join("")}</div>
+            </section>`;
+          }).join("")}</div>
+        </section>`;
+      }).join("");
+    }
+    const expandedGroups = new Set();
+    function render() {
+      const hasRecords = selectedDay === "9/25/26";
+      const countLabel = groupingMode === "model"
+        ? `${hasRecords ? new Set(responses.map(record => record.model)).size : 0} models used`
+        : `${hasRecords ? responses.length : 0} responses · newest first`;
+      document.getElementById("responseCount").textContent = countLabel;
+      const newestFirst = [...responses].sort((a, b) => timeRank(b.time) - timeRank(a.time));
+      let markup = "";
+      if (hasRecords && groupingMode === "responses") markup = newestFirst.map(responseMarkup).join("");
+      if (hasRecords && groupingMode === "model") markup = renderModelGrid(newestFirst);
+      if (hasRecords && groupingMode === "session") markup = renderSessions(newestFirst);
+      document.getElementById("groups").innerHTML = markup;
+      document.getElementById("empty").style.display = hasRecords ? "none" : "flex";
+      document.querySelectorAll(".model-more").forEach(button => button.addEventListener("click", () => {
+        const card = button.closest(".model-card");
+        const expanded = card.classList.toggle("expanded");
+        button.textContent = expanded ? "Show less" : "Show more";
+        button.setAttribute("aria-expanded", String(expanded));
+      }));
+      document.querySelectorAll(".more-info").forEach(button => button.addEventListener("click", () => {
+        const entry = button.closest(".response");
+        const expanded = entry.classList.toggle("expanded");
+        button.textContent = expanded ? "Less info" : "More info";
+        button.setAttribute("aria-expanded", String(expanded));
+      }));
+      document.querySelectorAll(".group-toggle").forEach(button => button.addEventListener("click", () => {
+        const key = button.dataset.key;
+        if (expandedGroups.has(key)) expandedGroups.delete(key);
+        else expandedGroups.add(key);
+        render();
+      }));
+    }
+    document.querySelectorAll(".segmented button").forEach(button => button.addEventListener("click", () => {
+      groupingMode = button.dataset.group;
+      expandedGroups.clear();
+      document.querySelectorAll(".segmented button").forEach(option => {
+        const active = option === button;
+        option.classList.toggle("active", active);
+        option.setAttribute("aria-pressed", String(active));
+      });
+      render();
+    }));
+    let selectedDay = "9/25/26";
+    document.getElementById("date").addEventListener("click", () => {
+      selectedDay = selectedDay === "9/25/26" ? "9/24/26" : "9/25/26";
+      document.getElementById("dateLabel").textContent = selectedDay;
+      document.getElementById("date").setAttribute("aria-label", `Selected day, ${selectedDay}`);
+      render();
+    });
+    render();
+  </script>
+</body>
+</html>

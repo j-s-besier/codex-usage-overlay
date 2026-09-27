@@ -1,7 +1,7 @@
 import Foundation
 
-enum TokenCountFormatter {
-    static func compact(_ value: Int64) -> String {
+public enum TokenCountFormatter {
+    public static func compact(_ value: Int64) -> String {
         let locale = Locale(identifier: "en_US_POSIX")
         if value >= 1_000_000_000 { return String(format: "%.1fB", locale: locale, Double(value) / 1_000_000_000) }
         if value >= 1_000_000 { return String(format: "%.1fM", locale: locale, Double(value) / 1_000_000) }
@@ -13,7 +13,7 @@ enum TokenCountFormatter {
 
 /// Reads only Codex token-count metadata from today's local session logs.
 /// Message text and tool output are never retained or emitted.
-final class LocalTokenUsageCounter: @unchecked Sendable {
+public final class LocalTokenUsageCounter: @unchecked Sendable {
     private struct LogEvent: Decodable {
         let type: String?
         let timestamp: String?
@@ -40,6 +40,7 @@ final class LocalTokenUsageCounter: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    private let codexHomeURL: URL
     private var dayStart: Date?
     private var fileStates: [URL: FileState] = [:]
     private var latestDate: String?
@@ -49,63 +50,126 @@ final class LocalTokenUsageCounter: @unchecked Sendable {
 
     private static let csvWriteInterval: TimeInterval = 5 * 60
 
-    func todayTotal(now: Date = Date()) throws -> Int64 {
+    public init(codexHomeURL: URL? = nil) {
+        if let codexHomeURL {
+            self.codexHomeURL = codexHomeURL
+        } else if let configuredPath = ProcessInfo.processInfo.environment["CODEX_HOME"] {
+            self.codexHomeURL = URL(fileURLWithPath: configuredPath, isDirectory: true)
+        } else {
+            self.codexHomeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent(".codex", isDirectory: true)
+        }
+    }
+
+    public var sessionsDirectoryURL: URL {
+        codexHomeURL.appendingPathComponent("sessions", isDirectory: true)
+    }
+
+    /// Rebuilds the counter from today's session files. Use at startup, day rollover, and recovery.
+    @discardableResult
+    public func reconcileToday(now: Date = Date()) throws -> Int64 {
         lock.lock()
         defer { lock.unlock() }
 
+        guard FileManager.default.fileExists(atPath: sessionsDirectoryURL.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        prepareDay(for: now)
+        return try reconcileTodayLocked(now: now)
+    }
+
+    /// Processes only changed JSONL paths. Missing, rotated, or truncated paths are reconciled safely.
+    @discardableResult
+    public func processChangedFiles(_ urls: [URL], now: Date = Date()) throws -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard FileManager.default.fileExists(atPath: sessionsDirectoryURL.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let previousDay = dayStart
+        prepareDay(for: now)
+        if previousDay != dayStart {
+            return try reconcileTodayLocked(now: now)
+        }
+
+        let rootPath = sessionsDirectoryURL.standardizedFileURL.path + "/"
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+        for inputURL in Set(urls.map(\.standardizedFileURL)) {
+            guard inputURL.path.hasPrefix(rootPath),
+                  inputURL.pathExtension == "jsonl",
+                  !inputURL.lastPathComponent.hasPrefix(".") else { continue }
+            guard let values = try? inputURL.resourceValues(forKeys: keys),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  let dayStart,
+                  modified >= dayStart else {
+                fileStates.removeValue(forKey: inputURL)
+                continue
+            }
+            processFile(inputURL, values: values, now: now)
+        }
+        return updateTotal(now: now)
+    }
+
+    private func reconcileTodayLocked(now: Date) throws -> Int64 {
+        guard FileManager.default.fileExists(atPath: sessionsDirectoryURL.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
         let calendar = Calendar.current
-        let start = calendar.startOfDay(for: now)
+        fileStates.removeAll(keepingCapacity: true)
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionsDirectoryURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return updateTotal(now: now) }
+        var seenFiles = Set<URL>()
+        while let url = enumerator.nextObject() as? URL {
+            guard url.pathExtension == "jsonl",
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  modified >= (dayStart ?? calendar.startOfDay(for: now)) else { continue }
+            let normalizedURL = url.standardizedFileURL
+            seenFiles.insert(normalizedURL)
+            processFile(normalizedURL, values: values, now: now)
+        }
+        fileStates = fileStates.filter { seenFiles.contains($0.key) }
+        return updateTotal(now: now)
+    }
+
+    private func prepareDay(for now: Date) {
+        let start = Calendar.current.startOfDay(for: now)
         if dayStart != start {
             dayStart = start
             fileStates.removeAll(keepingCapacity: true)
         }
+    }
 
-        let sessionsURL = Self.codexHomeURL
-            .appendingPathComponent("sessions", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: sessionsURL.path) else {
-            throw CocoaError(.fileNoSuchFile)
+    private func processFile(_ url: URL, values: URLResourceValues, now: Date) {
+        var state = fileStates[url] ?? FileState()
+        let currentSize = UInt64(values.fileSize ?? 0)
+        if currentSize < state.bytesRead {
+            state = FileState()
         }
-
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessionsURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return 0 }
-
-        var seenFiles = Set<URL>()
-        while let url = enumerator.nextObject() as? URL {
-            guard url.pathExtension == "jsonl",
-                  let values = try? url.resourceValues(forKeys: Set(keys)),
-                  values.isRegularFile == true,
-                  let modified = values.contentModificationDate,
-                  modified >= start else { continue }
-
-            seenFiles.insert(url)
-            var state = fileStates[url] ?? FileState()
-            let currentSize = UInt64(values.fileSize ?? 0)
-            if currentSize < state.bytesRead {
-                state = FileState()
+        if currentSize > state.bytesRead {
+            do {
+                let file = try FileHandle(forReadingFrom: url)
+                try file.seek(toOffset: state.bytesRead)
+                let appended = try file.readToEnd() ?? Data()
+                try file.close()
+                state.bytesRead += UInt64(appended.count)
+                state.pendingLine.append(appended)
+                consumeCompleteLines(in: &state, calendar: .current, now: now)
+            } catch {
+                return
             }
-
-            if currentSize > state.bytesRead {
-                do {
-                    let file = try FileHandle(forReadingFrom: url)
-                    try file.seek(toOffset: state.bytesRead)
-                    let appended = try file.readToEnd() ?? Data()
-                    try file.close()
-                    state.bytesRead += UInt64(appended.count)
-                    state.pendingLine.append(appended)
-                    consumeCompleteLines(in: &state, calendar: calendar, now: now)
-                } catch {
-                    continue
-                }
-            }
-
-            fileStates[url] = state
         }
+        fileStates[url] = state
+    }
 
-        fileStates = fileStates.filter { seenFiles.contains($0.key) }
+    private func updateTotal(now: Date) -> Int64 {
         let total = fileStates.values.reduce(0) { $0 + $1.tokens }
         let date = Self.dateString(for: now)
         let changed = latestDate != date || latestTokens != total
@@ -121,18 +185,18 @@ final class LocalTokenUsageCounter: @unchecked Sendable {
     }
 
     /// Flush the most recent total when the app is shutting down.
-    func flushLatestTotal() {
+    public func flushLatestTotal() {
         lock.lock()
         defer { lock.unlock() }
         guard latestDate != nil, latestTokens != nil else { return }
         persistLatestTotal(at: Date())
     }
 
-    func prepareDailyLogForViewing() throws -> URL {
+    public func prepareDailyLogForViewing() throws -> URL {
         lock.lock()
         defer { lock.unlock() }
 
-        let url = Self.codexHomeURL.appendingPathComponent("daily-token-usage.csv")
+        let url = codexHomeURL.appendingPathComponent("daily-token-usage.csv")
         guard !FileManager.default.fileExists(atPath: url.path) else { return url }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -145,19 +209,13 @@ final class LocalTokenUsageCounter: @unchecked Sendable {
     private func persistLatestTotal(at now: Date) {
         guard let date = latestDate, let tokens = latestTokens else { return }
         do {
-            let fileURL = Self.codexHomeURL.appendingPathComponent("daily-token-usage.csv")
+            let fileURL = codexHomeURL.appendingPathComponent("daily-token-usage.csv")
             try Self.writeCSV(date: date, tokens: tokens, updatedAt: now, to: fileURL)
             lastCSVWriteAt = now
             lastCSVWriteDate = date
         } catch {
             // Persistence is best-effort and must not stop the menu bar counter.
         }
-    }
-
-    private static var codexHomeURL: URL {
-        let path = ProcessInfo.processInfo.environment["CODEX_HOME"]
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex").path
-        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     private static func dateString(for date: Date) -> String {
